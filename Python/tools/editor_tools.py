@@ -81,7 +81,8 @@ def register_editor_tools(mcp: FastMCP):
         name: str,
         type: str,
         location: List[float] = [0.0, 0.0, 0.0],
-        rotation: List[float] = [0.0, 0.0, 0.0]
+        rotation: List[float] = [0.0, 0.0, 0.0],
+        static_mesh: str = None
     ) -> Dict[str, Any]:
         """Create a new actor in the current level.
         
@@ -91,6 +92,7 @@ def register_editor_tools(mcp: FastMCP):
             type: The type of actor to create (e.g. StaticMeshActor, PointLight)
             location: The [x, y, z] world location to spawn at
             rotation: The [pitch, yaw, roll] rotation in degrees
+            static_mesh: Optional path to static mesh asset for StaticMeshActor (e.g. "/Engine/BasicShapes/Cube.Cube")
             
         Returns:
             Dict containing the created actor's properties
@@ -110,6 +112,10 @@ def register_editor_tools(mcp: FastMCP):
                 "location": location,
                 "rotation": rotation
             }
+            
+            # Add static_mesh parameter if provided
+            if static_mesh:
+                params["static_mesh"] = static_mesh
             
             # Validate location and rotation formats
             for param_name in ["location", "rotation"]:
@@ -363,6 +369,50 @@ def register_editor_tools(mcp: FastMCP):
             
         except Exception as e:
             error_msg = f"Error spawning blueprint actor: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def set_actor_material(
+        ctx: Context,
+        name: str,
+        color: List[float]
+    ) -> Dict[str, Any]:
+        """Set the material color of a StaticMeshActor.
+        
+        Args:
+            ctx: The MCP context
+            name: Name of the actor
+            color: RGB color values as [R, G, B] where each value is 0.0-1.0
+            
+        Returns:
+            Dict containing the operation result
+        """
+        from unreal_mcp_server import get_unreal_connection
+        
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            
+            params = {
+                "name": name,
+                "color": [float(c) for c in color]
+            }
+            
+            logger.info(f"Setting material color for '{name}' to {color}")
+            response = unreal.send_command("set_actor_material", params)
+            
+            if not response:
+                logger.error("No response from Unreal Engine")
+                return {"success": False, "message": "No response from Unreal Engine"}
+            
+            logger.info(f"Set material response: {response}")
+            return response
+            
+        except Exception as e:
+            error_msg = f"Error setting actor material: {e}"
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 

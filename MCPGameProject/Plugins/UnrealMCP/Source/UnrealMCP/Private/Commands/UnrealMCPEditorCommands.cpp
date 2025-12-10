@@ -20,6 +20,7 @@
 #include "Subsystems/EditorActorSubsystem.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
 {
@@ -73,6 +74,10 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("take_screenshot"))
     {
         return HandleTakeScreenshot(Params);
+    }
+    else if (CommandType == TEXT("set_actor_material"))
+    {
+        return HandleSetActorMaterial(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -172,18 +177,47 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnActor(const TShared
     UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
     for (AActor* Actor : AllActors)
     {
-        if (Actor && Actor->GetName() == ActorName)
+        if (Actor && Actor->GetActorLabel() == ActorName)
         {
             return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor with name '%s' already exists"), *ActorName));
         }
     }
 
+    // Use spawn parameters without forcing a specific FName to avoid crashes
+    // We'll set the actor label after spawning instead
     FActorSpawnParameters SpawnParams;
-    SpawnParams.Name = *ActorName;
+    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
     if (ActorType == TEXT("StaticMeshActor"))
     {
-        NewActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, Rotation, SpawnParams);
+        AStaticMeshActor* MeshActor = World->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), Location, Rotation, SpawnParams);
+        NewActor = MeshActor;
+        
+        // Check if a static_mesh parameter was provided
+        FString StaticMeshPath;
+        if (MeshActor)
+        {
+            if (Params->HasField(TEXT("static_mesh")))
+            {
+                StaticMeshPath = Params->GetStringField(TEXT("static_mesh"));
+                UE_LOG(LogTemp, Warning, TEXT("Loading static mesh: %s"), *StaticMeshPath);
+                
+                UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *StaticMeshPath);
+                if (Mesh)
+                {
+                    MeshActor->GetStaticMeshComponent()->SetStaticMesh(Mesh);
+                    UE_LOG(LogTemp, Warning, TEXT("Successfully set static mesh: %s"), *StaticMeshPath);
+                }
+                else
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Failed to load static mesh: %s"), *StaticMeshPath);
+                }
+            }
+            else
+            {
+                UE_LOG(LogTemp, Warning, TEXT("No static_mesh parameter provided for StaticMeshActor"));
+            }
+        }
     }
     else if (ActorType == TEXT("PointLight"))
     {
@@ -208,6 +242,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnActor(const TShared
 
     if (NewActor)
     {
+        // Set the actor label (display name in editor)
+        NewActor->SetActorLabel(ActorName);
+        
         // Set scale (since SpawnActor only takes location and rotation)
         FTransform Transform = NewActor->GetTransform();
         Transform.SetScale3D(Scale);
@@ -233,7 +270,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteActor(const TShare
     
     for (AActor* Actor : AllActors)
     {
-        if (Actor && Actor->GetName() == ActorName)
+        if (Actor && (Actor->GetActorLabel() == ActorName || Actor->GetName() == ActorName))
         {
             // Store actor info before deletion for the response
             TSharedPtr<FJsonObject> ActorInfo = FUnrealMCPCommonUtils::ActorToJsonObject(Actor);
@@ -266,7 +303,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorTransform(const 
     
     for (AActor* Actor : AllActors)
     {
-        if (Actor && Actor->GetName() == ActorName)
+        if (Actor && (Actor->GetActorLabel() == ActorName || Actor->GetName() == ActorName))
         {
             TargetActor = Actor;
             break;
@@ -317,7 +354,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorProperties(const
     
     for (AActor* Actor : AllActors)
     {
-        if (Actor && Actor->GetName() == ActorName)
+        if (Actor && (Actor->GetActorLabel() == ActorName || Actor->GetName() == ActorName))
         {
             TargetActor = Actor;
             break;
@@ -349,7 +386,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorProperty(const T
     
     for (AActor* Actor : AllActors)
     {
-        if (Actor && Actor->GetName() == ActorName)
+        if (Actor && (Actor->GetActorLabel() == ActorName || Actor->GetName() == ActorName))
         {
             TargetActor = Actor;
             break;
@@ -462,11 +499,13 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
     SpawnTransform.SetScale3D(Scale);
 
     FActorSpawnParameters SpawnParams;
-    SpawnParams.Name = *ActorName;
+    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
     AActor* NewActor = World->SpawnActor<AActor>(Blueprint->GeneratedClass, SpawnTransform, SpawnParams);
     if (NewActor)
     {
+        // Set the actor label (display name in editor)
+        NewActor->SetActorLabel(ActorName);
         return FUnrealMCPCommonUtils::ActorToJsonObject(NewActor, true);
     }
 
@@ -521,7 +560,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFocusViewport(const TSha
         
         for (AActor* Actor : AllActors)
         {
-            if (Actor && Actor->GetName() == TargetActorName)
+            if (Actor && (Actor->GetActorLabel() == TargetActorName || Actor->GetName() == TargetActorName))
             {
                 TargetActor = Actor;
                 break;
@@ -597,4 +636,101 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleTakeScreenshot(const TSh
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to take screenshot"));
-} 
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorMaterial(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get actor name
+    FString ActorName;
+    if (!Params->TryGetStringField(TEXT("name"), ActorName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
+    }
+
+    // Find the actor
+    AActor* TargetActor = nullptr;
+    TArray<AActor*> AllActors;
+    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+    
+    for (AActor* Actor : AllActors)
+    {
+        if (Actor && (Actor->GetActorLabel() == ActorName || Actor->GetName() == ActorName))
+        {
+            TargetActor = Actor;
+            break;
+        }
+    }
+
+    if (!TargetActor)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Actor not found: %s"), *ActorName));
+    }
+
+    // Check if it's a StaticMeshActor
+    AStaticMeshActor* MeshActor = Cast<AStaticMeshActor>(TargetActor);
+    if (!MeshActor)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Actor is not a StaticMeshActor"));
+    }
+
+    UStaticMeshComponent* MeshComponent = MeshActor->GetStaticMeshComponent();
+    if (!MeshComponent)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Actor has no StaticMeshComponent"));
+    }
+
+    // Get color parameter (R, G, B values 0-1)
+    if (!Params->HasField(TEXT("color")))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'color' parameter"));
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* ColorArray;
+    if (!Params->TryGetArrayField(TEXT("color"), ColorArray) || ColorArray->Num() < 3)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'color' must be an array of [R, G, B] values (0-1)"));
+    }
+
+    float R = (*ColorArray)[0]->AsNumber();
+    float G = (*ColorArray)[1]->AsNumber();
+    float B = (*ColorArray)[2]->AsNumber();
+    FLinearColor Color(R, G, B, 1.0f);
+
+    // Create a dynamic material instance from the basic material
+    UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+    if (!BaseMaterial)
+    {
+        // Fallback: try to get the current material and create dynamic instance
+        UMaterialInterface* CurrentMaterial = MeshComponent->GetMaterial(0);
+        if (CurrentMaterial)
+        {
+            UMaterialInstanceDynamic* DynMaterial = UMaterialInstanceDynamic::Create(CurrentMaterial, MeshComponent);
+            if (DynMaterial)
+            {
+                DynMaterial->SetVectorParameterValue(TEXT("Color"), Color);
+                MeshComponent->SetMaterial(0, DynMaterial);
+            }
+        }
+    }
+    else
+    {
+        UMaterialInstanceDynamic* DynMaterial = UMaterialInstanceDynamic::Create(BaseMaterial, MeshComponent);
+        if (DynMaterial)
+        {
+            DynMaterial->SetVectorParameterValue(TEXT("Color"), Color);
+            MeshComponent->SetMaterial(0, DynMaterial);
+        }
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetBoolField(TEXT("success"), true);
+    ResultObj->SetStringField(TEXT("actor"), ActorName);
+    
+    TSharedPtr<FJsonObject> ColorObj = MakeShared<FJsonObject>();
+    ColorObj->SetNumberField(TEXT("r"), R);
+    ColorObj->SetNumberField(TEXT("g"), G);
+    ColorObj->SetNumberField(TEXT("b"), B);
+    ResultObj->SetObjectField(TEXT("color"), ColorObj);
+    
+    return ResultObj;
+}
